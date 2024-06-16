@@ -1,0 +1,105 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+#define MAX_STEPS 256
+#define MAX_DIST 1000.
+#define EPS 1e-4
+
+#define SPHERE_MAT 1
+#define GROUND_MAT 2
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+
+RWTexture2D<float4> Result;
+float2 iResolution;
+float4x4 CameraTransform;
+
+float4 SPHERE;
+float PLANE_HEIGHT;
+float4 LIGHT;
+float ShadowIntensity;
+
+
+float2 min2(float2 a, float2 b) {
+    return a.x < b.x ? a : b;
+}
+
+
+float2 GetDist(float3 p) {
+    float2 distSphere = float2(length(SPHERE.xyz - p) - SPHERE.w, SPHERE_MAT);
+    float2 distPlane = float2(p.y - PLANE_HEIGHT, GROUND_MAT);
+    return min2(distSphere, distPlane);
+}
+
+float3 GetNormal(float3 p) {
+    float d = GetDist(p);
+    float2 e = float2(EPS, 0);
+    float3 n = d - float3(GetDist(p - e.xyy).x,
+                          GetDist(p - e.yxy).x,
+                          GetDist(p - e.yyx).x);
+    return normalize(n);
+}
+
+float softshadow(float3 p, float k) {
+    float res = 1.0;
+    float ph = 1e20;
+
+    float3 rd = normalize(LIGHT.xyz - p);
+    for (float t = 1.0; t < LIGHT.w; ) {
+        float dist = GetDist(p + rd * t).x;
+        if (dist < EPS) {
+            return 0.0;
+        }
+        float y = dist * dist / (2.0 * ph);
+        float d = sqrt(dist * dist - y * y);
+        res = min(res, k * d / max(0.0, t - y));
+        t += dist;
+    }
+    return res;
+}
+
+float2 RayMarch(float3 ro, float3 rd) {
+    float currLength = 0.;
+    float currMat = 0.;
+    for (int i = 0; i < MAX_STEPS; i++) {
+        float3 p = ro + currLength * rd;
+        float2 dist = GetDist(p);
+        if (currLength > MAX_DIST) {
+            break;
+        }
+        if (dist.x < EPS) {
+            currMat = dist.y;
+        }
+        currLength += dist.x;
+    }
+    return float2(currLength, currMat);
+}
+
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    float2 uv = (id.xy - 0.5 * iResolution.xy) / iResolution.y;
+    float3 ro = mul(CameraTransform, float4(0., 0., 0., 1.)).xyz;
+    float3 rd = mul(CameraTransform, float4(uv.xy, 1., 0.)).xyz;
+
+    float2 dist = RayMarch(ro, rd);
+    float3 p = ro + dist.x * rd;
+
+    float3 n = GetNormal(p);
+
+    float3 mat = float3(0, 0, 0);
+    if (dist.y == SPHERE_MAT) {
+        mat = float3(1., 0, 0);
+    }
+    else if (dist.y == GROUND_MAT) {
+        mat = float3(.7, .7, .7);
+    }
+    float dif = clamp(dot(n, normalize(LIGHT.xyz - p)), 0., 1.);
+    float3 col = dif * mat * (softshadow(p, ShadowIntensity));
+    //float3 col = float3(uv.x, uv.y, 1.);
+    // Output to screen
+    Result[id.xy] = float4(col, 1.);
+}
